@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+    ports:
+      - "4000:4000"
+      - "8080:8080"
+    depends_on:
+      - whisper-service
+    restart: unless-stopped
+
+  whisper-service:
+    build:
+      context: ./whisper-service
+      dockerfile: Dockerfile
+    volumes:
+      - ./whisper-service:/app
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+# Optional: Force linux/amd64 for Apple Silicon if issues arise
+#   platform: linux/amd64

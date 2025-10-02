@@ -1,0 +1,17 @@
+{
+    "name": "gyanecho-backend",
+    "version": "1.0.0",
+    "type": "module",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "@google-cloud/translate": "^8.5.1",
+        "axios": "^1.6.0",
+        "child_process": "1.0.2",
+        "dotenv": "^16.0.3",
+        "express": "^4.18.2",
+        "ws": "^8.13.0"
+    }
+}
