@@ -24,11 +24,13 @@ wss.on("connection", (ws) => {
         
         const resp = await axios.post(`http://whisper-service:5000/transcribe`, {
           audioBase64: data.audioBase64,
+          expectedLanguage: data.expectedLanguage || null,
         });
 
         const transcription = resp.data.text.trim();
         const detectedLang = resp.data.language || "unknown";
-        console.log(`📝 Transcription (${detectedLang}):`, transcription);
+        const confidence = resp.data.confidence || 0;
+        console.log(`📝 Transcription (${detectedLang}, confidence: ${confidence.toFixed(3)}):`, transcription);
 
         // Only send if we got actual text
         if (transcription && transcription.length > 0) {

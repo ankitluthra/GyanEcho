@@ -16,55 +16,73 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-  
-    const socket = new WebSocket("ws://localhost:8080");
-    ws.current = socket;
-  
-    socket.onopen = () => {
-      console.log("✅ WebSocket connected");
+
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+    const reconnectDelay = 2000;
+
+    const connectWebSocket = () => {
+      const socket = new WebSocket("ws://localhost:8080");
+      ws.current = socket;
+
+      socket.onopen = () => {
+        console.log("✅ WebSocket connected");
+        reconnectAttempts = 0; // Reset on successful connection
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log("📩 Received:", data);
+
+          // Append to continuous text
+          setContinuousText((prev) => ({
+            original: prev.original + " " + (data.original || ""),
+            en: prev.en + " " + (data.translations?.en || ""),
+            fr: prev.fr + " " + (data.translations?.fr || ""),
+            pa: prev.pa + " " + (data.translations?.pa || ""),
+            hi: prev.hi + " " + (data.translations?.hi || "")
+          }));
+
+          // Also keep individual messages for reference
+          setMessages((prev) => [...prev, data]);
+        } catch (err) {
+          console.error("Failed to parse message:", err);
+        }
+      };
+
+      socket.onclose = (event) => {
+        console.log("⚠️ WebSocket disconnected", event.code, event.reason);
+        // Attempt to reconnect if not intentionally closed
+        if (event.code !== 1000 && reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++;
+          console.log(`🔄 Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`);
+          setTimeout(connectWebSocket, reconnectDelay);
+        }
+      };
+
+      socket.onerror = (err) => {
+        console.error("❌ WebSocket error:", err);
+      };
     };
-  
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        console.log("📩 Received:", data);
-        
-        // Append to continuous text
-        setContinuousText((prev) => ({
-          original: prev.original + " " + data.original,
-          en: prev.en + " " + (data.translations.en || ""),
-          fr: prev.fr + " " + (data.translations.fr || ""),
-          pa: prev.pa + " " + (data.translations.pa || ""),
-          hi: prev.hi + " " + (data.translations.hi || "")
-        }));
-        
-        // Also keep individual messages for reference
-        setMessages((prev) => [...prev, data]);
-      } catch (err) {
-        console.error("Failed to parse message:", err);
-      }
-    };
-  
-    socket.onclose = () => {
-      console.log("⚠️ WebSocket disconnected");
-    };
-  
-    socket.onerror = (err) => {
-      console.error("❌ WebSocket error:", err);
-    };
-  
+
+    connectWebSocket();
+
     return () => {
-      socket.close();
+      if (ws.current) {
+        ws.current.close(1000, "Component unmounting");
+      }
     };
   }, []);
 
   // Start capturing mic and sending audio as Base64
   const startMic = async () => {
-    if (!ws.current) {
-      alert("WebSocket not initialized yet!");
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.error("WebSocket not connected. Current state:", ws.current?.readyState);
+      alert("WebSocket not connected. Please wait for connection or refresh the page.");
       return;
     }
-  
+
     if (ws.current.readyState === WebSocket.CONNECTING) {
       console.log("⏳ Waiting for WebSocket to connect...");
       ws.current.addEventListener("open", () => {
@@ -77,60 +95,125 @@ export default function Home() {
     }
   };
   
-  
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // Try to use audio/wav if supported, otherwise use default
-      let mimeType = 'audio/webm';
-      if (MediaRecorder.isTypeSupported('audio/wav')) {
-        mimeType = 'audio/wav';
-      } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-        mimeType = 'audio/webm;codecs=opus';
+      let mediaRecorder;
+      let mimeType = '';
+      
+      // Try different approaches to create MediaRecorder
+      try {
+        // First, try without specifying MIME type (let browser choose)
+        mediaRecorder = new MediaRecorder(stream);
+        mimeType = 'default (browser-chosen)';
+      } catch (e1) {
+        console.log('Default MediaRecorder failed, trying specific MIME types...');
+        
+        // Try common supported MIME types
+        const supportedTypes = [
+          'audio/webm',
+          'audio/webm;codecs=opus',
+          'audio/mp4',
+          'audio/wav'
+        ];
+        
+        let foundSupported = false;
+        for (const type of supportedTypes) {
+          if (MediaRecorder.isTypeSupported(type)) {
+            try {
+              mediaRecorder = new MediaRecorder(stream, { mimeType: type });
+              mimeType = type;
+              foundSupported = true;
+              console.log(`✅ Using supported MIME type: ${type}`);
+              break;
+            } catch (e2) {
+              console.log(`❌ MIME type ${type} not supported despite isTypeSupported()`);
+            }
+          }
+        }
+        
+        if (!foundSupported) {
+          throw new Error('No supported audio MIME types found');
+        }
       }
       
-      console.log(`Using MIME type: ${mimeType}`);
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      console.log(`🎙️ MediaRecorder initialized with MIME type: ${mimeType}`);
       mediaRecorderRef.current = mediaRecorder;
       setRecording(true);
-  
+
       const audioChunks = [];
-  
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunks.push(event.data);
-          console.log(`Chunk received: ${event.data.size} bytes`);
+          console.log(`📦 Audio chunk received: ${event.data.size} bytes`);
         }
       };
 
       mediaRecorder.onstop = async () => {
         if (audioChunks.length > 0 && ws.current && ws.current.readyState === WebSocket.OPEN) {
-          const audioBlob = new Blob(audioChunks, { type: mimeType });
-          console.log(`Sending audio blob: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
-          const buffer = await audioBlob.arrayBuffer();
-          const base64Audio = arrayBufferToBase64(buffer);
-          ws.current.send(JSON.stringify({ audioBase64: base64Audio }));
-          audioChunks.length = 0; // Clear the array
+          try {
+            const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+
+            // Skip very small audio blobs (likely silence)
+            if (audioBlob.size < 1000) { // Less than 1KB is probably silence
+              console.log(`🔇 Skipping likely silence: ${audioBlob.size} bytes`);
+              audioChunks.length = 0;
+              return;
+            }
+
+            console.log(`📤 Sending audio blob: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
+            const buffer = await audioBlob.arrayBuffer();
+            const base64Audio = arrayBufferToBase64(buffer);
+
+            // Send audio for transcription (let Whisper auto-detect language for multilingual support)
+            ws.current.send(JSON.stringify({
+              audioBase64: base64Audio
+              // Removed hardcoded language hint - Whisper will auto-detect for better multilingual support
+            }));
+            audioChunks.length = 0; // Clear the array
+          } catch (error) {
+            console.error('❌ Error sending audio:', error);
+          }
         }
       };
-  
-      // Record for 5 seconds at a time (longer = better context)
-      mediaRecorder.start();
-      
-      // Send audio every 5 seconds
+
+      // Record for much shorter intervals for live translation
+      mediaRecorder.start(500); // Collect data every 0.5 seconds for faster response
+
+      // Send audio every 1 second for near real-time translation
       const intervalId = setInterval(() => {
-        if (mediaRecorder.state === "recording") {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
           mediaRecorder.stop();
-          mediaRecorder.start();
+          // Create new recorder for next chunk
+          try {
+            const newRecorder = new MediaRecorder(stream, { mimeType: mediaRecorder.mimeType || undefined });
+            newRecorder.ondataavailable = mediaRecorder.ondataavailable;
+            newRecorder.onstop = mediaRecorder.onstop;
+            mediaRecorderRef.current = newRecorder;
+            mediaRecorder = newRecorder;
+            mediaRecorder.start(500); // 0.5 second chunks for live feel
+          } catch (error) {
+            console.error('❌ Error creating new MediaRecorder:', error);
+          }
         }
-      }, 5000);
+      }, 1000); // Send every 1 second for much faster response
       
-      // Store interval ID so we can clear it later
+      // Store interval ID and stream so we can clear it later
       mediaRecorderRef.current.intervalId = intervalId;
+      mediaRecorderRef.current.audioStream = stream;
+      
     } catch (err) {
-      console.error("❌ Error accessing mic:", err);
-      alert("Cannot access microphone. Check permissions.");
+      console.error("❌ Error accessing microphone:", err);
+      if (err.name === 'NotAllowedError') {
+        alert("❌ Microphone permission denied. Please allow microphone access and try again.");
+      } else if (err.name === 'NotFoundError') {
+        alert("❌ No microphone found. Please connect a microphone and try again.");
+      } else if (err.name === 'NotSupportedError') {
+        alert("❌ Audio recording is not supported in this environment. Try using a different browser or environment.");
+      } else {
+        alert(`❌ Cannot access microphone: ${err.message}`);
+      }
     }
   };
   
@@ -153,8 +236,8 @@ export default function Home() {
       if (mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
       }
-      if (mediaRecorderRef.current.stream) {
-        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      if (mediaRecorderRef.current.audioStream) {
+        mediaRecorderRef.current.audioStream.getTracks().forEach((track) => track.stop());
       }
       setRecording(false);
     }
@@ -174,6 +257,7 @@ export default function Home() {
   return (
     <div className="p-6 bg-black text-white min-h-screen">
       <h1 className="text-3xl font-bold mb-4">🌍 GyanEcho Live Subtitles</h1>
+      <p className="text-sm text-gray-400 mb-4">🚀 Optimized for Hindi & multilingual speech • Real-time transcription</p>
 
       <div className="flex gap-4 mb-6">
         <button
